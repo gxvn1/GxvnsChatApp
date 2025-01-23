@@ -76,8 +76,14 @@ class ChatServer:
         if self.user_credentials[username] != password:
             return {'type': 'login_response', 'success': False, 'message': 'Invalid username or password'}
         
-        # Store connection
-        self.active_connections[username] = websocket
+        # Remove old connection if exists
+        if username in active_connections:
+            try:
+                await active_connections[username].close()
+            except:
+                pass
+        
+        active_connections[username] = websocket
         
         return {
             'type': 'login_response',
@@ -88,13 +94,13 @@ class ChatServer:
 
     async def broadcast(self, message: dict, sender: WebSocket = None):
         """Broadcast message to all connected clients except sender"""
-        for connection in self.active_connections.values():
+        for connection in active_connections.values():
             if connection != sender:
                 await connection.send_json(message)
 
     async def send_direct_message(self, recipient: str, message: dict):
         """Send message to specific user"""
-        for username, ws in self.active_connections.items():
+        for username, ws in active_connections.items():
             if username == recipient:
                 await ws.send_json(message)
                 break
@@ -160,81 +166,84 @@ async def websocket_endpoint(websocket: WebSocket):
     
     try:
         while True:
-            data = await websocket.receive_json()
-            print(f"Received message: {data}")  # Debug print
+            try:
+                data = await websocket.receive_json()
+                print(f"Received message: {data}")  # Debug print
+                
+                if data['type'] == 'register':
+                    response = await chat_server.register_user(websocket, data)
+                    await websocket.send_json(response)
+                
+                elif data['type'] == 'login':
+                    response = await chat_server.login_user(websocket, data)
+                    await websocket.send_json(response)
+                    if response['success']:
+                        username = response['username']
+                        # Notify others
+                        await chat_server.broadcast({
+                            'type': 'user_online',
+                            'username': username
+                        }, websocket)
+                
+                elif data['type'] == 'message':
+                    if data.get('group'):
+                        await chat_server.broadcast_to_group(data['group'], data, websocket)
+                    elif data.get('to'):
+                        # Direct message
+                        await chat_server.send_direct_message(data['to'], data)
+                    else:
+                        # Broadcast message
+                        await chat_server.broadcast(data, websocket)
+                
+                elif data['type'] == 'call_request':
+                    await chat_server.handle_call_request(data)
+                
+                elif data['type'] == 'screen_share':
+                    await chat_server.handle_screen_share(data)
+                
+                elif data['type'] == 'create_group':
+                    await chat_server.handle_create_group({'group_name': data['group_name'], 'members': data['members'], 'username': username})
+                
+                elif data['type'] == 'add_friend':
+                    await chat_server.handle_add_friend({'friend': data['friend'], 'username': username})
             
-            if data['type'] == 'register':
-                response = await chat_server.register_user(websocket, data)
-                await websocket.send_json(response)
-            
-            elif data['type'] == 'login':
-                response = await chat_server.login_user(websocket, data)
-                await websocket.send_json(response)
-                if response['success']:
-                    # Notify others
-                    await chat_server.broadcast({
-                        'type': 'user_online',
-                        'username': response['username']
-                    }, websocket)
-            
-            elif data['type'] == 'message':
-                if data.get('group'):
-                    await chat_server.broadcast_to_group(data['group'], data, websocket)
-                elif data.get('to'):
-                    # Direct message
-                    await chat_server.send_direct_message(data['to'], data)
-                else:
-                    # Broadcast message
-                    await chat_server.broadcast(data, websocket)
-            
-            elif data['type'] == 'call_request':
-                await chat_server.handle_call_request(data)
-            
-            elif data['type'] == 'screen_share':
-                await chat_server.handle_screen_share(data)
-            
-            elif data['type'] == 'create_group':
-                await chat_server.handle_create_group({'group_name': data['group_name'], 'members': data['members'], 'username': username})
-            
-            elif data['type'] == 'add_friend':
-                await chat_server.handle_add_friend({'friend': data['friend'], 'username': username})
-            
-            elif data['type'] == 'disconnect':
-                if username and username in chat_server.active_connections:
-                    del chat_server.active_connections[username]
-                    await chat_server.broadcast({
-                        'type': 'user_offline',
-                        'username': username
-                    })
-                break
+            except json.JSONDecodeError:
+                print("Invalid JSON message")
+                continue
+            except Exception as e:
+                print(f"Error processing message: {e}")
+                continue
     
     except WebSocketDisconnect:
-        if username and username in chat_server.active_connections:
-            del chat_server.active_connections[username]
+        if username and username in active_connections:
+            del active_connections[username]
             await chat_server.broadcast({
                 'type': 'user_offline',
                 'username': username
             })
+    except Exception as e:
+        print(f"Error in websocket_endpoint: {e}")
+        if username and username in active_connections:
+            del active_connections[username]
 
 async def broadcast_message(message: dict, exclude: str = None):
     """Send message to all connected clients except the sender"""
-    for username, connection in chat_server.active_connections.items():
+    disconnected_users = []
+    
+    for username, connection in active_connections.items():
         if username != exclude:
             try:
                 await connection.send_json(message)
             except Exception as e:
-                print(f"Error broadcasting to {username}: {e}")  # Debug print
-                pass
+                print(f"Error broadcasting to {username}: {e}")
+                disconnected_users.append(username)
+    
+    # Clean up disconnected users
+    for username in disconnected_users:
+        if username in active_connections:
+            del active_connections[username]
 
 if __name__ == "__main__":
-    # Use environment variable for port if available (for PythonAnywhere)
-    port = int(os.getenv("PORT", 8765))
-    
-    # Start the server
     import uvicorn
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=port,
-        ws_max_size=1024*1024  # 1MB max message size
-    )
+    port = int(os.environ.get("PORT", 8765))
+    uvicorn.run(app, host="0.0.0.0", port=port)
