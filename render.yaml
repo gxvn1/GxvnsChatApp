@@ -1,6 +1,9 @@
 services:
   - type: web
     name: gxvnschatapp
-    env: docker
-    buildCommand: docker build -t gxvnschatapp .
-    startCommand: docker run -p 8765:8765 gxvnschatapp
+    env: python
+    buildCommand: pip install -r server_requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.0
