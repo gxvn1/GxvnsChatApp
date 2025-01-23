@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: gxvnschatapp
+    env: docker
+    buildCommand: docker build -t gxvnschatapp .
+    startCommand: docker run -p 8765:8765 gxvnschatapp
