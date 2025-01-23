@@ -4,6 +4,11 @@ import json
 from datetime import datetime
 import os
 from typing import Dict
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -163,12 +168,13 @@ async def root():
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     username = None
+    logger.info("New WebSocket connection established")
     
     try:
         while True:
             try:
                 data = await websocket.receive_json()
-                print(f"Received message: {data}")  # Debug print
+                logger.info(f"Received message: {data}")
                 
                 if data['type'] == 'register':
                     response = await chat_server.register_user(websocket, data)
@@ -207,14 +213,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif data['type'] == 'add_friend':
                     await chat_server.handle_add_friend({'friend': data['friend'], 'username': username})
             
-            except json.JSONDecodeError:
-                print("Invalid JSON message")
+            except json.JSONDecodeError as e:
+                logger.error(f"Invalid JSON message: {e}")
                 continue
             except Exception as e:
-                print(f"Error processing message: {e}")
+                logger.error(f"Error processing message: {e}")
                 continue
     
     except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected for user: {username}")
         if username and username in active_connections:
             del active_connections[username]
             await chat_server.broadcast({
@@ -222,7 +229,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 'username': username
             })
     except Exception as e:
-        print(f"Error in websocket_endpoint: {e}")
+        logger.error(f"Error in websocket_endpoint: {e}")
         if username and username in active_connections:
             del active_connections[username]
 
@@ -234,16 +241,26 @@ async def broadcast_message(message: dict, exclude: str = None):
         if username != exclude:
             try:
                 await connection.send_json(message)
+                logger.info(f"Message broadcast to {username}")
             except Exception as e:
-                print(f"Error broadcasting to {username}: {e}")
+                logger.error(f"Error broadcasting to {username}: {e}")
                 disconnected_users.append(username)
     
     # Clean up disconnected users
     for username in disconnected_users:
         if username in active_connections:
             del active_connections[username]
+            logger.info(f"Removed disconnected user: {username}")
 
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8765))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        log_level="info",
+        timeout_keep_alive=60,
+        ws_ping_interval=20,
+        ws_ping_timeout=20
+    )
